@@ -1,0 +1,11 @@
+# Build output
+**/bin/
+**/obj/
+# User files
+*.user
+.vs/
+# IDE
+.idea/
+*.suo
+# Temp
+*.tmp
