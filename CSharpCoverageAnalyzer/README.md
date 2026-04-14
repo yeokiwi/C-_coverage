@@ -11,7 +11,9 @@ A .NET 8 command-line tool that performs **statement coverage**, **decision cove
 - [Installation](#installation)
 - [Usage](#usage)
   - [analyze — Static Analysis Mode](#analyze--static-analysis-mode)
-  - [run — Runtime Measurement Mode](#run--runtime-measurement-mode)
+  - [instrument — Automatic Instrumentation](#instrument--automatic-instrumentation)
+  - [report — Generate Report from Instrumented Run](#report--generate-report-from-instrumented-run)
+  - [run — All-in-One Runtime Measurement](#run--all-in-one-runtime-measurement)
   - [Options Reference](#options-reference)
 - [Output Formats](#output-formats)
 - [Examples](#examples)
@@ -91,11 +93,13 @@ After installation the tool is available as `coverage-analyzer` on your `PATH`.
 
 ## Usage
 
-The tool has two subcommands:
+The tool has four subcommands:
 
 ```
-coverage-analyzer analyze <path> [options]
-coverage-analyzer run     <test-project> [options]
+coverage-analyzer analyze    <path>         [options]   # static analysis
+coverage-analyzer instrument <path>         [options]   # rewrite source with probes
+coverage-analyzer report     --probes --data [options]  # report from saved data
+coverage-analyzer run        <test-project> [options]   # all-in-one
 ```
 
 ---
@@ -114,9 +118,76 @@ coverage-analyzer analyze <path> [--type <type>] [--format <fmt>...] [--output <
 
 ---
 
-### `run` — Runtime Measurement Mode
+### `instrument` — Automatic Instrumentation
 
-Instruments the source code by injecting tracking probes, runs your tests via `dotnet test`, collects the probe data, and reports which statements, branches, and MC/DC pairs were actually exercised.
+**Automatically instruments** the given source code, project, or solution and writes a ready-to-build copy to an output directory. No manual code changes are required.
+
+```bash
+coverage-analyzer instrument <path> [--type <type>] [--output <dir>]
+```
+
+| Argument | Description |
+|---|---|
+| `<path>` | Path to a `.cs` file, `.csproj` project, or `.sln` solution |
+| `--output` | Directory to write the instrumented tree (default: `instrumented`) |
+
+What the command does:
+
+1. **Analyzes** the source to identify all statements, decisions, and MC/DC conditions.
+2. **Rewrites** every `.cs` file with `CoverageTracker` probe calls injected at each coverage point.
+3. **Copies** project and solution files to the output directory, patching legacy-style `.csproj` files to include the tracker source.
+4. **Embeds** `CoverageAnalyzer.Runtime.CoverageTracker.cs` into each project's output directory so the instrumented code compiles without any additional package references.
+5. **Writes** `probes.json` — a probe registry that maps every probe ID back to its source location, used later by the `report` command.
+6. **Prints** the exact build/test/report commands to run next.
+
+After running `instrument`, you build and test the output directory **exactly as you would the original project**:
+
+```bash
+# Instrument
+coverage-analyzer instrument MyApp/MyApp.csproj --output instrumented/
+
+# Build the instrumented copy
+dotnet build instrumented/MyApp.csproj
+
+# Run your tests (set the output path for the coverage data)
+set COVERAGE_OUTPUT_PATH=coverage-raw.json   # Windows
+export COVERAGE_OUTPUT_PATH=coverage-raw.json  # Linux / macOS
+dotnet test instrumented/MyApp.csproj
+
+# Generate the coverage report
+coverage-analyzer report \
+    --probes instrumented/probes.json \
+    --data coverage-raw.json \
+    --format console html json \
+    --output coverage-report/
+```
+
+> **Note:** If `COVERAGE_OUTPUT_PATH` is not set, the runtime writes `coverage-raw.json` in the current working directory.
+
+---
+
+### `report` — Generate Report from Instrumented Run
+
+Loads the probe registry saved by `instrument` and the raw coverage data written by the instrumented test run, then generates the final coverage report.
+
+```bash
+coverage-analyzer report \
+    --probes <probes.json> \
+    --data   <coverage-raw.json> \
+    [--format <fmt>...] \
+    [--output <dir>]
+```
+
+| Option | Description |
+|---|---|
+| `--probes` | Path to `probes.json` written by `instrument` (required) |
+| `--data` | Path to `coverage-raw.json` written by the instrumented test run (required) |
+
+---
+
+### `run` — All-in-One Runtime Measurement
+
+Instruments source code entirely in memory, runs your tests via `dotnet test`, collects the probe data, and generates the coverage report — all in a single command. Use this when you do not need to keep the instrumented source.
 
 ```bash
 coverage-analyzer run <test-project> [--source <path>] [--type <type>] [--format <fmt>...] [--output <dir>]
@@ -192,44 +263,74 @@ Generates `report.json` with a machine-readable structure suitable for CI pipeli
 
 ## Examples
 
-### Analyze a single file (static, all coverage types, console output)
+### Static analysis — list all coverage requirements for a file
 
 ```bash
 coverage-analyzer analyze src/MyClass.cs
 ```
 
-### Analyze a project and produce an HTML report
+### Static analysis of a project with HTML + JSON output
 
 ```bash
-coverage-analyzer analyze MyApp/MyApp.csproj --type all --format html --output reports/
+coverage-analyzer analyze MyApp/MyApp.csproj --type all --format html json --output reports/
 ```
 
-### Analyze a full solution and produce HTML + JSON
+### Instrument a single file, then report after tests run
 
 ```bash
-coverage-analyzer analyze MyApp.sln --format html --format json --output reports/
+# Step 1: instrument
+coverage-analyzer instrument src/Calculator.cs --output instrumented/
+
+# Step 2: build and run (Calculator.cs must be part of a buildable project)
+dotnet build MyApp.csproj
+COVERAGE_OUTPUT_PATH=coverage-raw.json dotnet test MyApp.Tests.csproj
+
+# Step 3: report
+coverage-analyzer report \
+    --probes instrumented/probes.json \
+    --data coverage-raw.json \
+    --format console html
 ```
 
-### Measure MC/DC only, console output
+### Instrument an entire project automatically
 
 ```bash
-coverage-analyzer analyze src/Validator.cs --type mcdc
+coverage-analyzer instrument MyApp/MyApp.csproj --output MyApp-instrumented/
+dotnet build MyApp-instrumented/MyApp.csproj
+dotnet test MyApp-instrumented/MyApp.csproj
+coverage-analyzer report \
+    --probes MyApp-instrumented/probes.json \
+    --data coverage-raw.json \
+    --format console html json \
+    --output coverage-report/
 ```
 
-### Run tests and measure runtime coverage
+### Instrument a full solution
+
+```bash
+coverage-analyzer instrument MyApp.sln --output MySolution-instrumented/
+dotnet build MySolution-instrumented/MyApp.sln
+dotnet test MySolution-instrumented/MyApp.sln
+coverage-analyzer report \
+    --probes MySolution-instrumented/probes.json \
+    --data coverage-raw.json \
+    --format html --output coverage-report/
+```
+
+### All-in-one: run tests and get a report in a single command
 
 ```bash
 coverage-analyzer run MyApp.Tests/MyApp.Tests.csproj \
     --source MyApp/MyApp.csproj \
     --type all \
-    --format console --format html \
+    --format console html \
     --output coverage-report/
 ```
 
-### Run with a solution that bundles source and tests
+### Measure MC/DC only
 
 ```bash
-coverage-analyzer run MyApp.sln --format html --output coverage-report/
+coverage-analyzer analyze src/Validator.cs --type mcdc
 ```
 
 ---
@@ -245,13 +346,18 @@ CSharpCoverageAnalyzer/
 │   │   │                               #   ConditionNode, MCDCRequirement, CoverageReport
 │   │   ├── Loading/                    # FileLoader, ProjectLoader, SolutionLoader, SourceLoader
 │   │   ├── Analysis/                   # StatementAnalyzer, DecisionAnalyzer, MCDCAnalyzer
-│   │   ├── Instrumentation/            # CoverageRewriter (SyntaxRewriter), ProbeRegistry
+│   │   ├── Instrumentation/
+│   │   │   ├── CoverageRewriter.cs     # Roslyn SyntaxRewriter — injects probe calls
+│   │   │   ├── ProbeRegistry.cs        # Applies runtime data to probe model
+│   │   │   ├── InstrumentationWriter.cs# Writes instrumented source tree to disk
+│   │   │   └── ProbeRegistrySerializer.cs # JSON round-trip for probes.json
 │   │   ├── Reporting/                  # ConsoleReporter, HtmlReporter, JsonReporter
 │   │   └── CoverageEngine.cs           # Orchestration entry point
 │   ├── CoverageAnalyzer.Runtime/       # Lightweight probe collector (no Roslyn dependency)
 │   │   └── CoverageTracker.cs          # RecordStatement / RecordBranch / RecordCondition
+│   │                                   # (also embedded verbatim into each instrumented project)
 │   └── CoverageAnalyzer.CLI/           # System.CommandLine entry point
-│       └── Program.cs                  # analyze and run subcommands
+│       └── Program.cs                  # analyze / instrument / report / run subcommands
 └── tests/
     └── CoverageAnalyzer.Tests/         # xUnit tests for all three analyzers
 ```
@@ -302,9 +408,9 @@ For every compound boolean expression that is the condition of an `if`, `while`,
 
 The resulting pairs are stored as `MCDCRequirement` objects, each recording the two test vectors and their expected decision outcomes.
 
-### Instrumentation (Runtime Mode)
+### Instrumentation
 
-A `CSharpSyntaxRewriter` traverses the syntax tree and injects calls into the `CoverageAnalyzer.Runtime.CoverageTracker` static class:
+A `CSharpSyntaxRewriter` (`CoverageRewriter`) traverses the syntax tree and injects calls into `CoverageAnalyzer.Runtime.CoverageTracker`:
 
 ```csharp
 // Before each executable statement
@@ -317,7 +423,16 @@ if (CoverageTracker.RecordBranch(trueId, falseId, <originalCondition>)) { ... }
 CoverageTracker.RecordCondition(condId, <originalSubExpr>)
 ```
 
-`CoverageTracker` uses concurrent dictionaries, is thread-safe, and serialises all collected data to `coverage-raw.json` on `AppDomain.ProcessExit`.
+`CoverageTracker` uses concurrent dictionaries, is thread-safe, and serialises all collected data to `coverage-raw.json` on `AppDomain.ProcessExit`. The output path can be overridden via the `COVERAGE_OUTPUT_PATH` environment variable.
+
+**Two instrumentation modes are available:**
+
+| Mode | Command | How it works |
+|---|---|---|
+| **Persistent** | `instrument` | Rewrites `.cs` files to disk; embeds `CoverageTracker.cs` in the output project; writes `probes.json`. You build, test, then run `report`. |
+| **Ephemeral** | `run` | Rewrites sources in a temporary directory, runs `dotnet test`, collects data, and reports — all automatically. No files are kept. |
+
+In persistent mode (`instrument`), `InstrumentationWriter` mirrors the original directory structure under the output directory, patches `.csproj` files as needed, and saves the probe registry to `probes.json`. The `report` command later reads `probes.json` alongside `coverage-raw.json` to reconstruct full coverage results.
 
 ---
 

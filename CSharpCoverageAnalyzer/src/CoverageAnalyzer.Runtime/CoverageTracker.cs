@@ -13,7 +13,8 @@ public static class CoverageTracker
     private static readonly ConcurrentDictionary<int, BranchData> _branches = new();
     private static readonly ConcurrentDictionary<int, ConcurrentBag<bool>> _conditions = new();
 
-    private static string _outputPath = "coverage-raw.json";
+    private static string _outputPath =
+        Environment.GetEnvironmentVariable("COVERAGE_OUTPUT_PATH") ?? "coverage-raw.json";
 
     static CoverageTracker()
     {

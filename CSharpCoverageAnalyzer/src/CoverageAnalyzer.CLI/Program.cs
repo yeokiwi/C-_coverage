@@ -63,6 +63,128 @@ analyzeCmd.SetHandler((path, type, formats, outputDir) =>
 root.AddCommand(analyzeCmd);
 
 // ════════════════════════════════════════════════════════════════════════════════
+// instrument <path>  — rewrite source with probes, write instrumented tree to disk
+// ════════════════════════════════════════════════════════════════════════════════
+var instrumentPathArg = new Argument<string>("path", "Path to a .cs file, .csproj, or .sln to instrument");
+var instrumentOutputOption = new Option<string>(
+    "--output",
+    getDefaultValue: () => "instrumented",
+    description: "Output directory for instrumented source tree");
+
+var instrumentCmd = new Command(
+    "instrument",
+    "Automatically instrument source code for coverage testing. " +
+    "Rewrites .cs files with probe calls, copies/patches project files, " +
+    "and writes probes.json for use with the 'report' command.");
+instrumentCmd.AddArgument(instrumentPathArg);
+instrumentCmd.AddOption(typeOption);
+instrumentCmd.AddOption(instrumentOutputOption);
+
+instrumentCmd.SetHandler((path, type, outputDir) =>
+{
+    Console.WriteLine($"Instrumenting : {path}");
+    Console.WriteLine($"Output dir    : {outputDir}");
+
+    var coverageType = ParseCoverageType(type);
+
+    IReadOnlyList<ParsedSource> sources;
+    try { sources = SourceLoader.Load(path); }
+    catch (Exception ex) { Console.Error.WriteLine($"Load error: {ex.Message}"); return; }
+
+    if (sources.Count == 0)
+    {
+        Console.WriteLine("No C# source files found.");
+        return;
+    }
+
+    Console.WriteLine($"Found {sources.Count} source file(s). Analyzing…");
+    var report = CoverageEngine.BuildReport(path, sources, coverageType, CoverageMode.Runtime);
+
+    Console.WriteLine("Writing instrumented output…");
+    string probesPath;
+    try
+    {
+        probesPath = InstrumentationWriter.Write(path, sources, report, outputDir);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Instrumentation error: {ex.Message}");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Instrumentation complete.");
+    PrintNextSteps(path, outputDir, probesPath);
+
+}, instrumentPathArg, typeOption, instrumentOutputOption);
+
+root.AddCommand(instrumentCmd);
+
+// ════════════════════════════════════════════════════════════════════════════════
+// report  — load probes.json + coverage-raw.json, generate final report
+// ════════════════════════════════════════════════════════════════════════════════
+var probesOption = new Option<string>(
+    "--probes",
+    description: "Path to probes.json written by the 'instrument' command")
+{
+    IsRequired = true
+};
+var dataOption = new Option<string>(
+    "--data",
+    description: "Path to coverage-raw.json written by the instrumented test run")
+{
+    IsRequired = true
+};
+
+var reportCmd = new Command(
+    "report",
+    "Generate a coverage report from probes.json and coverage-raw.json " +
+    "produced after running the instrumented test project.");
+reportCmd.AddOption(probesOption);
+reportCmd.AddOption(dataOption);
+reportCmd.AddOption(formatOption);
+reportCmd.AddOption(outputOption);
+
+reportCmd.SetHandler((probesPath, dataPath, formats, outputDir) =>
+{
+    Console.WriteLine($"Probes : {probesPath}");
+    Console.WriteLine($"Data   : {dataPath}");
+
+    CoverageReport report;
+    try
+    {
+        report = ProbeRegistrySerializer.Load(probesPath);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error loading probes: {ex.Message}");
+        return;
+    }
+
+    var registry = new ProbeRegistry(
+        report.Statements,
+        report.Decisions,
+        report.Conditions,
+        report.MCDCRequirements);
+
+    if (File.Exists(dataPath))
+    {
+        ApplyRawData(dataPath, registry);
+    }
+    else
+    {
+        Console.Error.WriteLine($"Warning: coverage data file not found: {dataPath}");
+        Console.Error.WriteLine("Report will show 0% coverage. Did the instrumented tests run?");
+    }
+
+    Directory.CreateDirectory(outputDir);
+    WriteReports(report, formats, outputDir, "report");
+
+}, probesOption, dataOption, formatOption, outputOption);
+
+root.AddCommand(reportCmd);
+
+// ════════════════════════════════════════════════════════════════════════════════
 // run <test-project> — instrument, run dotnet test, collect results
 // ════════════════════════════════════════════════════════════════════════════════
 var testProjectArg = new Argument<string>("test-project", "Path to the test .csproj or .sln to run");
@@ -106,7 +228,7 @@ runCmd.SetHandler((testProject, source, type, formats, outputDir) =>
     Console.WriteLine($"Temp dir   : {tempDir}");
     Console.WriteLine("Instrumenting source files…");
 
-    InstrumentFiles(sources, report, tempDir);
+    InstrumentSourceFiles(sources, report, tempDir);
 
     // 3. Run dotnet test with env var pointing to coverage output
     Console.WriteLine("Running tests…");
@@ -171,7 +293,8 @@ static void WriteReports(CoverageReport report, string[] formats, string outputD
     }
 }
 
-static void InstrumentFiles(
+// Used by the 'run' command (in-memory only, no disk output for source files)
+static void InstrumentSourceFiles(
     IReadOnlyList<ParsedSource> sources,
     CoverageReport report,
     string tempDir)
@@ -230,4 +353,30 @@ static void ApplyRawData(string rawCoveragePath, ProbeRegistry registry)
         (c.ProbeId, (IReadOnlyList<bool>)c.Values));
 
     registry.ApplyRawData(data.Statements, branches, conditions);
+}
+
+static void PrintNextSteps(string inputPath, string outputDir, string probesPath)
+{
+    string ext = Path.GetExtension(inputPath).ToLowerInvariant();
+    string exampleProject = ext == ".sln"
+        ? Path.Combine(outputDir, Path.GetFileName(inputPath))
+        : Path.Combine(outputDir, Path.GetFileName(inputPath));
+
+    Console.WriteLine();
+    Console.WriteLine("Next steps");
+    Console.WriteLine("──────────");
+    Console.WriteLine($"1. Build the instrumented project:");
+    Console.WriteLine($"     dotnet build \"{exampleProject}\"");
+    Console.WriteLine();
+    Console.WriteLine($"2. Run your tests against the instrumented build:");
+    Console.WriteLine($"     dotnet test \"{exampleProject}\"");
+    Console.WriteLine($"   Coverage data will be written to: coverage-raw.json");
+    Console.WriteLine($"   (Override the path via the COVERAGE_OUTPUT_PATH environment variable.)");
+    Console.WriteLine();
+    Console.WriteLine($"3. Generate the coverage report:");
+    Console.WriteLine($"     coverage-analyzer report \\");
+    Console.WriteLine($"       --probes \"{probesPath}\" \\");
+    Console.WriteLine($"       --data coverage-raw.json \\");
+    Console.WriteLine($"       --format console html json \\");
+    Console.WriteLine($"       --output coverage-report");
 }
