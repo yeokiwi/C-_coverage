@@ -66,9 +66,23 @@ dotnet run --project src/CoverageAnalyzer.CLI/CoverageAnalyzer.CLI.csproj -- <su
 
 ### Install as a global .NET tool (optional)
 
+From inside the `CSharpCoverageAnalyzer/` directory:
+
 ```bash
 dotnet pack src/CoverageAnalyzer.CLI/CoverageAnalyzer.CLI.csproj -c Release
-dotnet tool install --global --add-source ./src/CoverageAnalyzer.CLI/nupkg CoverageAnalyzer.CLI
+dotnet tool install --global --add-source src/CoverageAnalyzer.CLI/bin/Release CoverageAnalyzer.CLI
+```
+
+To upgrade an already-installed version, use `update` instead of `install`:
+
+```bash
+dotnet tool update --global --add-source src/CoverageAnalyzer.CLI/bin/Release CoverageAnalyzer.CLI
+```
+
+To uninstall:
+
+```bash
+dotnet tool uninstall --global CoverageAnalyzer.CLI
 ```
 
 After installation the tool is available as `coverage-analyzer` on your `PATH`.

@@ -5,6 +5,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>coverage-analyzer</ToolCommandName>
+    <PackageId>CoverageAnalyzer.CLI</PackageId>
+    <Version>1.0.0</Version>
+    <Description>C# statement, decision, and MC/DC coverage analyzer</Description>
   </PropertyGroup>
 
   <ItemGroup>
